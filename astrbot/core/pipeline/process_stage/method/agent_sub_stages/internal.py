@@ -510,6 +510,19 @@ class InternalAgentSubStage(Stage):
         runner_stats: AgentStats | None,
         user_aborted: bool = False,
     ) -> None:
+        """Persist a completed turn unless its event was stopped for a reset.
+
+        Args:
+            event: Owning request event. A reset stops propagation; an ordinary
+                output cancellation leaves propagation active so partial work saves.
+            req: Request containing the bound conversation.
+            llm_response: Final response when available.
+            all_messages: Runtime history including the current turn.
+            runner_stats: Execution statistics, when available.
+            user_aborted: Whether generation was cancelled by the user.
+        """
+        if event.is_stopped():
+            return
         if not req or not req.conversation:
             return
 

@@ -9,7 +9,7 @@ from collections.abc import Awaitable, Callable
 
 from deprecated import deprecated
 
-from astrbot.core import sp
+from astrbot.core import logger, sp
 from astrbot.core.agent.message import AssistantMessageSegment, UserMessageSegment
 from astrbot.core.db import BaseDatabase
 from astrbot.core.db.po import Conversation, ConversationV2
@@ -26,6 +26,46 @@ class ConversationManager:
 
         # 会话删除回调函数列表（用于级联清理，如知识库配置）
         self._on_session_deleted_callbacks: list[Callable[[str], Awaitable[None]]] = []
+        self._on_context_reset_callbacks: list[Callable[[str], Awaitable[None]]] = []
+
+    def register_on_context_reset(
+        self,
+        callback: Callable[[str], Awaitable[None]],
+    ) -> None:
+        """Register a listener for explicit conversation context changes.
+
+        Args:
+            callback: Async listener receiving the affected unified message origin.
+        """
+        if callback not in self._on_context_reset_callbacks:
+            self._on_context_reset_callbacks.append(callback)
+
+    def unregister_on_context_reset(
+        self,
+        callback: Callable[[str], Awaitable[None]],
+    ) -> None:
+        """Remove a previously registered context listener when its owner unloads.
+
+        Args:
+            callback: Async listener to remove, if it is currently registered.
+        """
+        if callback in self._on_context_reset_callbacks:
+            self._on_context_reset_callbacks.remove(callback)
+
+    async def _trigger_context_reset(self, unified_msg_origin: str) -> None:
+        """Notify listeners after a context-changing operation has succeeded.
+
+        Args:
+            unified_msg_origin: Session whose selected conversation context changed.
+        """
+        for callback in tuple(self._on_context_reset_callbacks):
+            try:
+                await callback(unified_msg_origin)
+            except Exception as error:
+                logger.warning(
+                    "Conversation context reset callback failed: "
+                    + type(error).__name__
+                )
 
     def register_on_session_deleted(
         self,
@@ -105,6 +145,7 @@ class ConversationManager:
             conversation_id (str): 对话 ID, 是 uuid 格式的字符串
 
         """
+        previous_cid = await self.get_curr_conversation_id(unified_msg_origin)
         if not platform_id:
             # 如果没有提供 platform_id，则从 unified_msg_origin 中解析
             parts = unified_msg_origin.split(":")
@@ -121,6 +162,8 @@ class ConversationManager:
         )
         self.session_conversations[unified_msg_origin] = conv.conversation_id
         await sp.session_put(unified_msg_origin, "sel_conv_id", conv.conversation_id)
+        if previous_cid:
+            await self._trigger_context_reset(unified_msg_origin)
         return conv.conversation_id
 
     async def switch_conversation(
@@ -135,6 +178,7 @@ class ConversationManager:
         """
         self.session_conversations[unified_msg_origin] = conversation_id
         await sp.session_put(unified_msg_origin, "sel_conv_id", conversation_id)
+        await self._trigger_context_reset(unified_msg_origin)
 
     async def delete_conversation(
         self,
@@ -156,6 +200,7 @@ class ConversationManager:
             if curr_cid == conversation_id:
                 self.session_conversations.pop(unified_msg_origin, None)
                 await sp.session_remove(unified_msg_origin, "sel_conv_id")
+                await self._trigger_context_reset(unified_msg_origin)
 
     async def delete_conversations_by_user_id(self, unified_msg_origin: str) -> None:
         """删除会话的所有对话
@@ -170,6 +215,7 @@ class ConversationManager:
 
         # 触发会话删除回调（级联清理）
         await self._trigger_session_deleted(unified_msg_origin)
+        await self._trigger_context_reset(unified_msg_origin)
 
     async def get_curr_conversation_id(self, unified_msg_origin: str) -> str | None:
         """获取会话当前的对话 ID
@@ -305,6 +351,10 @@ class ConversationManager:
                 content=history,
                 token_usage=token_usage,
             )
+            if history == [] and conversation_id == await self.get_curr_conversation_id(
+                unified_msg_origin
+            ):
+                await self._trigger_context_reset(unified_msg_origin)
 
     @deprecated(reason="Use update_conversation() with the title parameter instead.")
     async def update_conversation_title(

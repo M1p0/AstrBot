@@ -182,6 +182,7 @@ async def test_failed_llm_response_persists_checkpoint_for_retry():
     stage.conv_manager = conversation_manager
     event = SimpleNamespace(
         unified_msg_origin="webchat:FriendMessage:test",
+        is_stopped=lambda: False,
         get_extra=lambda key: {"llm_checkpoint_id": "cp-1"}.get(key),
     )
     request = ProviderRequest(
@@ -218,6 +219,7 @@ async def test_aborted_response_persists_synthetic_stop_turn():
     stage.conv_manager = conversation_manager
     event = SimpleNamespace(
         unified_msg_origin="webchat:FriendMessage:test",
+        is_stopped=lambda: False,
         get_extra=lambda _key: None,
     )
     request = ProviderRequest(
@@ -266,6 +268,7 @@ async def test_terminal_tool_result_persists_history_without_checkpoint():
     stage.conv_manager = conversation_manager
     event = SimpleNamespace(
         unified_msg_origin="qq:GroupMessage:test",
+        is_stopped=lambda: False,
         get_extra=lambda _key: None,
     )
     tool_call = ToolCall(
@@ -338,6 +341,7 @@ async def test_terminal_tool_result_with_checkpoint_uses_none_token_usage():
     stage.conv_manager = conversation_manager
     event = SimpleNamespace(
         unified_msg_origin="qq:GroupMessage:test",
+        is_stopped=lambda: False,
         get_extra=lambda key: {"llm_checkpoint_id": "cp-1"}.get(key),
     )
     tool_call = ToolCall(
@@ -411,6 +415,7 @@ async def test_empty_response_without_tool_result_skips_history_save():
     stage.conv_manager = conversation_manager
     event = SimpleNamespace(
         unified_msg_origin="qq:GroupMessage:test",
+        is_stopped=lambda: False,
         get_extra=lambda _key: None,
     )
     request = ProviderRequest(

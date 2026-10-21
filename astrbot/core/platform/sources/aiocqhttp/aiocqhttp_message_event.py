@@ -1,6 +1,7 @@
 import asyncio
 import re
-from collections.abc import AsyncGenerator
+from collections.abc import AsyncGenerator, Awaitable, Callable
+from copy import deepcopy
 
 from aiocqhttp import CQHttp, Event
 
@@ -95,7 +96,21 @@ class AiocqhttpMessageEvent(AstrMessageEvent):
         is_group: bool,
         session_id: str | None,
         messages: list[dict],
+        send_observer: Callable[[dict], Awaitable[None]] | None = None,
     ) -> None:
+        """Dispatch one wire message and report its confirmed delivery receipt.
+
+        Args:
+            bot: Connected OneBot client.
+            event: Inbound event used for account routing, when available.
+            is_group: Whether the destination is a group.
+            session_id: Destination group or private QQ identifier.
+            messages: Exact OneBot message segments sent in this request.
+            send_observer: Optional callback for a confirmed message ID and segments.
+
+        Raises:
+            ValueError: Neither a numeric destination nor an inbound event is given.
+        """
         # session_id 必须是纯数字字符串
         session_id_int = (
             int(session_id) if session_id and session_id.isdigit() else None
@@ -105,23 +120,39 @@ class AiocqhttpMessageEvent(AstrMessageEvent):
             routing_params["self_id"] = event["self_id"]
 
         if is_group and isinstance(session_id_int, int):
-            await bot.send_group_msg(
+            receipt = await bot.send_group_msg(
                 group_id=session_id_int,
                 message=messages,
                 **routing_params,
             )
         elif not is_group and isinstance(session_id_int, int):
-            await bot.send_private_msg(
+            receipt = await bot.send_private_msg(
                 user_id=session_id_int,
                 message=messages,
                 **routing_params,
             )
         elif isinstance(event, Event):  # 最后兜底
-            await bot.send(event=event, message=messages)
+            receipt = await bot.send(event=event, message=messages)
         else:
             raise ValueError(
                 f"无法发送消息：缺少有效的数字 session_id({session_id}) 或 event({event})",
             )
+        if (
+            send_observer is not None
+            and isinstance(receipt, dict)
+            and receipt.get("message_id") is not None
+        ):
+            try:
+                await send_observer(
+                    {
+                        "message_id": str(receipt["message_id"]),
+                        "message": deepcopy(messages),
+                    }
+                )
+            except Exception as error:
+                logger.warning(
+                    f"[aiocqhttp] Send observer failed: {type(error).__name__}"
+                )
 
     @classmethod
     async def send_message(
@@ -131,16 +162,19 @@ class AiocqhttpMessageEvent(AstrMessageEvent):
         event: Event | None = None,
         is_group: bool = False,
         session_id: str | None = None,
+        send_observer: Callable[[dict], Awaitable[None]] | None = None,
     ) -> None:
-        """发送消息至 QQ 协议端（aiocqhttp）。
+        """Send message components and report each successful wire send.
 
         Args:
-            bot (CQHttp): aiocqhttp 机器人实例
-            message_chain (MessageChain): 要发送的消息链
-            event (Event | None, optional): aiocqhttp 事件对象.
-            is_group (bool, optional): 是否为群消息.
-            session_id (str | None, optional): 会话 ID（群号或 QQ 号
-
+            bot: Connected OneBot client.
+            message_chain: Message components to deliver.
+            event: Inbound event used for account routing, when available.
+            is_group: Whether the destination is a group.
+            session_id: Destination group or private QQ identifier.
+            send_observer: Optional callback receiving the confirmed message ID and
+                exact OneBot segments for each send. Callback failures are logged
+                without failing delivery. Earlier receipts survive a later failure.
         """
         # 转发消息、文件消息不能和普通消息混在一起发送
         send_one_by_one = any(
@@ -150,7 +184,9 @@ class AiocqhttpMessageEvent(AstrMessageEvent):
             ret = await cls._parse_onebot_json(message_chain)
             if not ret:
                 return
-            await cls._dispatch_send(bot, event, is_group, session_id, ret)
+            await cls._dispatch_send(
+                bot, event, is_group, session_id, ret, send_observer
+            )
             return
         for seg in message_chain.chain:
             if isinstance(seg, Node | Nodes):
@@ -165,28 +201,56 @@ class AiocqhttpMessageEvent(AstrMessageEvent):
                     payload["group_id"] = session_id
                     if isinstance(event, Event) and event.get("self_id"):
                         payload["self_id"] = event["self_id"]
-                    await bot.call_action("send_group_forward_msg", **payload)
+                    receipt = await bot.call_action("send_group_forward_msg", **payload)
                 else:
                     payload["user_id"] = session_id
                     if isinstance(event, Event) and event.get("self_id"):
                         payload["self_id"] = event["self_id"]
-                    await bot.call_action("send_private_forward_msg", **payload)
+                    receipt = await bot.call_action(
+                        "send_private_forward_msg", **payload
+                    )
+                if (
+                    send_observer is not None
+                    and isinstance(receipt, dict)
+                    and receipt.get("message_id") is not None
+                ):
+                    try:
+                        await send_observer(
+                            {
+                                "message_id": str(receipt["message_id"]),
+                                "message": deepcopy(payload["messages"]),
+                            }
+                        )
+                    except Exception as error:
+                        logger.warning(
+                            f"[aiocqhttp] Send observer failed: {type(error).__name__}"
+                        )
             elif isinstance(seg, File):
                 d = await cls._from_segment_to_dict(seg)
-                await cls._dispatch_send(bot, event, is_group, session_id, [d])
+                await cls._dispatch_send(
+                    bot, event, is_group, session_id, [d], send_observer
+                )
             else:
                 messages = await cls._parse_onebot_json(MessageChain([seg]))
                 if not messages:
                     continue
-                await cls._dispatch_send(bot, event, is_group, session_id, messages)
+                await cls._dispatch_send(
+                    bot, event, is_group, session_id, messages, send_observer
+                )
                 await asyncio.sleep(0.5)
 
     async def send(self, message: MessageChain) -> None:
-        """发送消息"""
+        """Send to the current QQ chat with an optional event-local observer.
+
+        Args:
+            message: Components to deliver. A callable stored in event extra
+                ``_aiocqhttp_send_observer`` receives each successful wire receipt.
+        """
         event = getattr(self.message_obj, "raw_message", None)
 
         is_group = bool(self.get_group_id())
         session_id = self.get_group_id() if is_group else self.get_sender_id()
+        send_observer = self.get_extra("_aiocqhttp_send_observer")
 
         await self.send_message(
             bot=self.bot,
@@ -194,6 +258,7 @@ class AiocqhttpMessageEvent(AstrMessageEvent):
             event=event,  # 不强制要求一定是 Event
             is_group=is_group,
             session_id=session_id,
+            send_observer=send_observer if callable(send_observer) else None,
         )
         await super().send(message)
 

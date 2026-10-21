@@ -11,6 +11,7 @@ from astrbot.core.agent.runners.deerflow.constants import (
 from astrbot.core.agent.runners.deerflow.deerflow_api_client import DeerFlowAPIClient
 from astrbot.core.db.po import ProviderStat
 from astrbot.core.utils.active_event_registry import active_event_registry
+from astrbot.core.utils.session_lock import session_lock_manager
 
 THIRD_PARTY_AGENT_RUNNER_KEY = {
     "dify": "dify_conversation_id",
@@ -118,7 +119,6 @@ class ConversationCommands:
         agent_runner_type = cfg["agent_runner"]["runner_type"]
 
         active_event_registry.stop_all(umo, exclude=message)
-        cid = await self.context.conversation_manager.get_curr_conversation_id(umo)
         if agent_runner_type in THIRD_PARTY_AGENT_RUNNER_KEY:
             await _clear_third_party_agent_runner_state(
                 self.context,
@@ -126,12 +126,17 @@ class ConversationCommands:
                 agent_runner_type,
             )
         else:
-            if cid:
-                await self.context.conversation_manager.update_conversation(
-                    umo,
-                    cid,
-                    history=[],
+            # Finish any already-started history write before clearing the session.
+            async with session_lock_manager.acquire_lock(umo):
+                cid = await self.context.conversation_manager.get_curr_conversation_id(
+                    umo
                 )
+                if cid:
+                    await self.context.conversation_manager.update_conversation(
+                        umo,
+                        cid,
+                        history=[],
+                    )
 
         message.set_extra("_clean_group_context_session", True)
         message.set_result(

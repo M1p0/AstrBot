@@ -6,6 +6,7 @@ from dataclasses import dataclass
 from astrbot import logger
 from astrbot.core.agent.runners.tool_loop_agent_runner import FollowUpTicket
 from astrbot.core.astr_agent_run_util import AgentRunner
+from astrbot.core.message.components import Plain
 from astrbot.core.platform.astr_message_event import AstrMessageEvent
 from astrbot.core.utils.active_event_registry import active_event_registry
 
@@ -174,6 +175,21 @@ async def _monitor_follow_up_ticket(
 
 
 def try_capture_follow_up(event: AstrMessageEvent) -> FollowUpCapture | None:
+    """Capture plain-text follow-ups without discarding structured input.
+
+    Args:
+        event: Incoming message considered for an active run by the same sender.
+
+    Returns:
+        Capture state for a queued text notice, or None when the message must
+        continue through normal request preparation with its original components.
+    """
+    # A tool-result notice cannot carry attachments, quoted speakers or mentions.
+    if any(
+        not isinstance(component, Plain)
+        for component in getattr(event.message_obj, "message", ()) or ()
+    ):
+        return None
     sender_id = event.get_sender_id()
     if not sender_id:
         return None

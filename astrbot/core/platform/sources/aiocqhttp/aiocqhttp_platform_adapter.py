@@ -20,7 +20,10 @@ from astrbot.api.platform import (
     Platform,
     PlatformMetadata,
 )
-from astrbot.core.platform.astr_message_event import MessageSesion
+from astrbot.core.platform.astr_message_event import (
+    MessageSesion,
+    current_message_event,
+)
 
 from ...register import register_platform_adapter
 from .aiocqhttp_message_event import *
@@ -111,17 +114,47 @@ class AiocqhttpAdapter(Platform):
         session: MessageSesion,
         message_chain: MessageChain,
     ) -> None:
+        """Send to a QQ session, retaining provenance for the current destination.
+
+        Args:
+            session: Target session, including an optional isolated group member ID.
+            message_chain: Components to deliver. The active event's send observer
+                applies only when its platform and QQ destination match the target.
+        """
         is_group = session.message_type == MessageType.GROUP_MESSAGE
         if is_group:
             session_id = session.session_id.split("_")[-1]
         else:
             session_id = session.session_id
+        source_event = current_message_event.get()
+        raw_event = None
+        send_observer = None
+        if (
+            source_event is not None
+            and source_event._execution_active
+            and source_event.get_platform_name() == "aiocqhttp"
+            and source_event.get_platform_id()
+            == session.platform_name
+            == self.meta().id
+            and source_event.get_message_type() == session.message_type
+            and session_id
+            == str(
+                source_event.get_group_id()
+                if is_group
+                else source_event.get_sender_id()
+            )
+        ):
+            raw_event = getattr(source_event.message_obj, "raw_message", None)
+            observer = source_event.get_extra("_aiocqhttp_send_observer")
+            if callable(observer):
+                send_observer = observer
         await AiocqhttpMessageEvent.send_message(
             bot=self.bot,
             message_chain=message_chain,
-            event=None,  # 这里不需要 event，因为是通过 session 发送的
+            event=raw_event,
             is_group=is_group,
             session_id=session_id,
+            send_observer=send_observer,
         )
         await super().send_by_session(session, message_chain)
 
