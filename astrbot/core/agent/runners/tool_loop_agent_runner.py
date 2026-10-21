@@ -320,6 +320,8 @@ class ToolLoopAgentRunner(BaseAgentRunner[TContext]):
             or request.extra_user_content_parts
         ):
             m = await self._assemble_request_context_for_provider(request)
+            if request.extra_user_metadata:
+                m["metadata"] = copy.deepcopy(request.extra_user_metadata)
             messages.append(Message.model_validate(m))
         if request.system_prompt:
             messages.insert(

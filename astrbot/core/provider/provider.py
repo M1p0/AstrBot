@@ -1,5 +1,6 @@
 import abc
 import asyncio
+import copy
 import os
 from collections.abc import AsyncGenerator
 from typing import Literal, TypeAlias, Union
@@ -194,7 +195,14 @@ class Provider(AbstractProvider):
         self,
         messages: list[dict] | list[Message] | None,
     ) -> list[dict]:
-        """Convert a list of Message objects to a list of dictionaries."""
+        """Copy provider messages without internal checkpoints or metadata.
+
+        Args:
+            messages: Runtime messages or persisted history dictionaries.
+
+        Returns:
+            Detached provider-facing dictionaries without internal metadata.
+        """
         if not messages:
             return []
         dicts: list[dict] = []
@@ -204,7 +212,9 @@ class Provider(AbstractProvider):
             if isinstance(message, Message):
                 dicts.append(message.model_dump())
             else:
-                dicts.append(message)
+                copied = copy.deepcopy(message)
+                copied.pop("metadata", None)
+                dicts.append(copied)
 
         return dicts
 

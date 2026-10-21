@@ -1,10 +1,12 @@
 # Inspired by MoonshotAI/kosong, credits to MoonshotAI/kosong authors for the original implementation.
 # License: Apache License 2.0
 
+from copy import deepcopy
 from typing import Any, ClassVar, Literal, TypeVar, cast
 
 from pydantic import (
     BaseModel,
+    Field,
     GetCoreSchemaHandler,
     PrivateAttr,
     ValidationError,
@@ -212,6 +214,9 @@ class Message(BaseModel):
     tool_call_id: str | None = None
     """The ID of the tool call."""
 
+    metadata: dict[str, Any] | None = Field(default=None, exclude=True)
+    """Internal source information persisted separately from provider content."""
+
     _no_save: bool = PrivateAttr(default=False)
     _checkpoint_after: CheckpointData | None = PrivateAttr(default=None)
 
@@ -334,7 +339,7 @@ def bind_checkpoint_messages(history: list[dict]) -> list[Message]:
                 messages[-1]._checkpoint_after = checkpoint
             continue
 
-        message = Message.model_validate(item)
+        message = Message.model_validate(deepcopy(item))
         if item.get("_no_save"):
             message._no_save = True
         messages.append(message)
@@ -347,6 +352,8 @@ def dump_messages_with_checkpoints(messages: list[Message]) -> list[dict]:
     dumped: list[dict] = []
     for message in messages:
         message_data = message.model_dump()
+        if message.metadata is not None:
+            message_data["metadata"] = deepcopy(message.metadata)
         if isinstance(message.content, list):
             message_data["content"] = [
                 part.model_dump()
