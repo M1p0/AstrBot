@@ -193,7 +193,7 @@ def _register_builtin_tool_config_rule(
 
 
 _register_builtin_tool_config_rule(
-    ("send_message_to_user",),
+    ("send_message_to_user", "render_color_palette"),
     BuiltinToolConfigRule(evaluator=_evaluate_send_message_tool),
 )
 

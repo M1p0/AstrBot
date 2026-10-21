@@ -1952,6 +1952,7 @@ class TestBuildMainAgent:
         mock_context.get_provider_by_id.return_value = None
         mock_context.get_using_provider.return_value = mock_provider
         mock_context.get_config.return_value = {}
+        mock_context.get_llm_tool_manager.return_value.get_full_tool_set.return_value = ToolSet()
 
         conv_mgr = mock_context.conversation_manager
         _setup_conversation_for_build(conv_mgr)
@@ -1972,6 +1973,11 @@ class TestBuildMainAgent:
 
         assert result is not None
         assert isinstance(result, module.MainAgentBuildResult)
+
+        request = mock_runner.reset.await_args.kwargs["request"]
+        assert "render_color_palette" in request.func_tool.names()
+        assert "send_message_to_user" in request.func_tool.names()
+        assert "You can send images in this conversation" in request.system_prompt
 
     @pytest.mark.asyncio
     async def test_build_main_agent_passes_max_context_length_to_runner(

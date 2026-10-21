@@ -76,6 +76,7 @@ class SearchResult:
     url: str
     snippet: str
     favicon: str | None = None
+    image_urls: list[str] = field(default_factory=list)
 
 
 @std_dataclass
@@ -196,6 +197,8 @@ def _search_result_payload(results: list[SearchResult]) -> str:
                 "index": index,
             }
         )
+        if result.image_urls:
+            ret_ls[-1]["image_urls"] = result.image_urls
         _cache_favicon(result.url, result.favicon)
     return json.dumps({"results": ret_ls}, ensure_ascii=False)
 
@@ -1523,6 +1526,17 @@ async def _exa_search(
                         or (item.get("highlights") or [""])[0]
                         or item.get("summary", "")
                     ),
+                    image_urls=list(
+                        dict.fromkeys(
+                            url
+                            for url in [
+                                item.get("image"),
+                                *(item.get("extras") or {}).get("imageLinks", []),
+                            ]
+                            if isinstance(url, str)
+                            and url.startswith(("https://", "http://"))
+                        )
+                    )[:10],
                 )
                 for item in data.get("results", [])
                 if item.get("url")
@@ -1563,6 +1577,8 @@ class ExaWebSearchTool(FunctionTool[AstrAgentContext]):
     description: str = (
         "A web search tool powered by Exa, an AI-native search engine. "
         "Supports keyword and semantic search with domain, date, and category filters."
+        " Returns image_urls when available; use relevant direct image URLs with "
+        "send_message_to_user to send pictures, or exa_get_contents to find more page images."
     )
     parameters: dict = Field(
         default_factory=lambda: {
@@ -1629,7 +1645,7 @@ class ExaWebSearchTool(FunctionTool[AstrAgentContext]):
             "query": kwargs["query"],
             "numResults": num_results,
             "type": search_type,
-            "contents": {"text": {"maxCharacters": 500}},
+            "contents": {"text": {"maxCharacters": 500}, "extras": {"imageLinks": 3}},
         }
 
         category = kwargs.get("category", "")
@@ -1665,7 +1681,10 @@ class ExaGetContentsTool(FunctionTool[AstrAgentContext]):
     """Extract full page content from URLs using the Exa Contents API."""
 
     name: str = "exa_get_contents"
-    description: str = "Extract the content of a web page using Exa."
+    description: str = (
+        "Extract page text and available direct image URLs using Exa. "
+        "Use relevant returned image URLs with send_message_to_user to send pictures."
+    )
     parameters: dict = Field(
         default_factory=lambda: {
             "type": "object",
@@ -1701,12 +1720,25 @@ class ExaGetContentsTool(FunctionTool[AstrAgentContext]):
             {
                 "ids": [url],
                 "text": {"maxCharacters": max_characters},
+                "extras": {"imageLinks": 10},
             },
         )
         ret_ls = []
         for result in results:
             ret_ls.append(f"URL: {result.get('url', 'No URL')}")
             ret_ls.append(f"Content: {result.get('text', 'No content')}")
+            images = list(
+                dict.fromkeys(
+                    url
+                    for url in [
+                        result.get("image"),
+                        *(result.get("extras") or {}).get("imageLinks", []),
+                    ]
+                    if isinstance(url, str) and url.startswith(("https://", "http://"))
+                )
+            )[:10]
+            if images:
+                ret_ls.append(f"Image URLs: {json.dumps(images, ensure_ascii=False)}")
         ret = "\n".join(ret_ls)
         return ret or "Error: Exa get contents does not return any results."
 

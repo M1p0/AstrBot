@@ -92,6 +92,7 @@ from astrbot.core.tools.knowledge_base_tools import (
 )
 from astrbot.core.tools.message_tools import (
     GetGroupMessageHistoryTool,
+    RenderColorPaletteTool,
     SendMessageToUserTool,
 )
 from astrbot.core.tools.web_search_tools import (
@@ -180,6 +181,17 @@ WEB_SEARCH_CITATION_PROMPT = (
     "Index is a unique identifier for each search result. "
     "Use the exact citation format <ref>index</ref> (e.g. <ref>abcd.3</ref>) "
     "after the sentence that uses the information. Do not invent citations."
+)
+MEDIA_OUTPUT_SYSTEM_PROMPT = (
+    "You can send images in this conversation using send_message_to_user "
+    "with type=image and a direct image url or an existing local path. "
+    "When asked for a picture, try the available tools before declaring "
+    "it unavailable. Use render_color_palette for color swatches; "
+    "use available web search and page extraction tools for existing pictures, "
+    "then send a relevant returned image URL. Do not invent image URLs or file "
+    "paths, treat a page URL as an image, or claim delivery before the send "
+    "tool succeeds. If an attempt fails, explain the specific limitation. "
+    "Earlier claims that you cannot send pictures are outdated."
 )
 
 
@@ -1916,6 +1928,12 @@ async def build_main_agent(
                 SendMessageToUserTool
             )
         )
+        req.func_tool.add_tool(
+            plugin_context.get_llm_tool_manager().get_builtin_tool(
+                RenderColorPaletteTool
+            )
+        )
+        req.system_prompt = f"{req.system_prompt or ''}\n{MEDIA_OUTPUT_SYSTEM_PROMPT}\n"
 
     ltm_settings = plugin_context.get_config(umo=event.unified_msg_origin).get(
         "provider_ltm_settings",

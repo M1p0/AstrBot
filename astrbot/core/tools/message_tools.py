@@ -2,10 +2,12 @@ import csv
 import io
 import json
 import os
+import re
 import shlex
 import uuid
 from pathlib import Path
 
+from PIL import Image, ImageDraw
 from pydantic import Field
 from pydantic.dataclasses import dataclass
 
@@ -31,6 +33,7 @@ from astrbot.core.utils.astrbot_path import (
     get_astrbot_system_tmp_path,
     get_astrbot_temp_path,
 )
+from astrbot.core.utils.t2i.local_strategy import FontManager
 
 
 def _file_send_allowed_roots(
@@ -69,6 +72,95 @@ def _can_send_local_file(
     if _is_path_within(local_path, allowed_roots):
         return True
     return is_local_runtime(context) and not _is_restricted_local_env(context)
+
+
+@builtin_tool
+@dataclass
+class RenderColorPaletteTool(FunctionTool[AstrAgentContext]):
+    name: str = "render_color_palette"
+    description: str = (
+        "Create a PNG image of named color swatches from hex color values. "
+        "Use when the user asks to see colors or compare a palette. "
+        "Returns a local image path; call send_message_to_user with type=image "
+        "and that path to deliver it. Approximate colors must be described as approximate."
+    )
+    parameters: dict = Field(
+        default_factory=lambda: {
+            "type": "object",
+            "properties": {
+                "colors": {
+                    "type": "array",
+                    "minItems": 1,
+                    "maxItems": 8,
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "name": {"type": "string", "minLength": 1, "maxLength": 16},
+                            "hex": {"type": "string", "pattern": "^#[0-9A-Fa-f]{6}$"},
+                        },
+                        "required": ["name", "hex"],
+                    },
+                }
+            },
+            "required": ["colors"],
+        }
+    )
+
+    async def call(self, context, **kwargs) -> ToolExecResult:
+        """Render bounded color swatches without shell access or external services.
+
+        Args:
+            context: Current agent context.
+            **kwargs: One to eight colors with names and six-digit hex values.
+
+        Returns:
+            JSON containing the image path, or an actionable validation error.
+        """
+        colors = kwargs.get("colors")
+        if not isinstance(colors, list) or not 1 <= len(colors) <= 8:
+            return "Error: colors must contain between 1 and 8 swatches."
+        for color in colors:
+            if (
+                not isinstance(color, dict)
+                or not isinstance(color.get("name"), str)
+                or not 1 <= len(color["name"].strip()) <= 16
+                or not isinstance(color.get("hex"), str)
+                or not re.fullmatch(r"#[0-9A-Fa-f]{6}", color["hex"])
+            ):
+                return "Error: each color needs a name (1-16 characters) and a hex value such as #C8A2C8."
+
+        columns = min(2, len(colors))
+        image = Image.new(
+            "RGB", (columns * 440 + 20, ((len(colors) + 1) // 2) * 300 + 20), "white"
+        )
+        draw = ImageDraw.Draw(image)
+        for index, color in enumerate(colors):
+            x, y = 20 + (index % columns) * 440, 20 + (index // columns) * 300
+            draw.rectangle(
+                (x, y, x + 420, y + 210), fill=color["hex"], outline="#D4D8DB"
+            )
+            draw.text(
+                (x, y + 220),
+                color["name"].strip(),
+                font=FontManager.get_font(24),
+                fill="#202224",
+            )
+            draw.text(
+                (x, y + 254),
+                color["hex"].upper(),
+                font=FontManager.get_font(20),
+                fill="#666B70",
+            )
+        path = Path(get_astrbot_temp_path()) / f"palette_{uuid.uuid4().hex}.png"
+        path.parent.mkdir(parents=True, exist_ok=True)
+        image.save(path, format="PNG")
+        return json.dumps(
+            {
+                "path": str(path),
+                "instruction": "Send this image using send_message_to_user with type=image and path. The image has not been sent yet.",
+            },
+            ensure_ascii=False,
+        )
 
 
 @builtin_tool

@@ -792,6 +792,15 @@ async def test_exa_search_raw_api_call(monkeypatch):
                         "title": "AstrBot",
                         "url": "https://example.com",
                         "text": "AI Agent Assistant",
+                        "image": "https://example.com/cover.jpg",
+                        "extras": {
+                            "imageLinks": [
+                                "https://example.com/cover.jpg",
+                                "https://example.com/photo.png",
+                                "javascript:alert(1)",
+                                None,
+                            ]
+                        },
                     }
                 ],
             },
@@ -813,9 +822,18 @@ async def test_exa_search_raw_api_call(monkeypatch):
     assert session.posted["headers"]["x-api-key"] == "exa-key"
     assert results == [
         tools.SearchResult(
-            title="AstrBot", url="https://example.com", snippet="AI Agent Assistant"
+            title="AstrBot",
+            url="https://example.com",
+            snippet="AI Agent Assistant",
+            image_urls=[
+                "https://example.com/cover.jpg",
+                "https://example.com/photo.png",
+            ],
         )
     ]
+    output = json.loads(tools._search_result_payload(results))["results"][0]
+    assert output["image_urls"] == results[0].image_urls
+    assert output["url"] == "https://example.com"
 
 
 @pytest.mark.asyncio
@@ -854,6 +872,34 @@ async def test_exa_get_contents_returns_text(monkeypatch):
     result = await tool.call(context, url="https://example.com")
 
     assert result == "URL: https://example.com\nContent: # Example Content"
+
+
+@pytest.mark.asyncio
+async def test_exa_get_contents_preserves_direct_images_and_source(monkeypatch):
+    """Keep usable image URLs alongside the page they came from."""
+
+    async def fake_contents(provider_settings, payload):
+        assert payload["extras"] == {"imageLinks": 10}
+        return [
+            {
+                "url": "https://example.com",
+                "text": "Color chart",
+                "image": "https://example.com/chart.png",
+                "extras": {
+                    "imageLinks": [
+                        "https://example.com/chart.png",
+                        "data:image/png;base64,invalid",
+                    ]
+                },
+            }
+        ]
+
+    monkeypatch.setattr(tools, "_exa_get_contents", fake_contents)
+    context = _context_with_provider_settings({"websearch_exa_key": ["exa-key"]})
+    result = await tools.ExaGetContentsTool().call(context, url="https://example.com")
+    assert 'Image URLs: ["https://example.com/chart.png"]' in result
+    assert "URL: https://example.com" in result
+    assert "data:image" not in result
 
 
 @pytest.mark.asyncio

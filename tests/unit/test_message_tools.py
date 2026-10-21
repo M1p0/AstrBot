@@ -1,14 +1,73 @@
 """Tests for send_message_to_user session handling."""
 
+import json
+from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
+from PIL import Image
 
 from astrbot.core.message.message_event_result import MessageEventResult
 from astrbot.core.pipeline.respond.stage import RespondStage
 from astrbot.core.platform.astr_message_event import AstrMessageEvent
-from astrbot.core.tools.message_tools import SendMessageToUserTool
+from astrbot.core.tools.message_tools import (
+    RenderColorPaletteTool,
+    SendMessageToUserTool,
+)
+
+
+@pytest.mark.asyncio
+async def test_render_palette_preserves_colors_and_can_be_sent_without_computer_runtime(
+    monkeypatch, tmp_path
+):
+    """Create the requested image and pass it through the existing send tool."""
+    from astrbot.core.tools import message_tools
+
+    monkeypatch.setattr(message_tools, "get_astrbot_temp_path", lambda: str(tmp_path))
+    result = await RenderColorPaletteTool().call(
+        None,
+        colors=[{"name": "雪青", "hex": "#C8A2C8"}, {"name": "月白", "hex": "#D6ECF0"}],
+    )
+    path = Path(json.loads(result)["path"])
+    assert path.parent == tmp_path
+    with Image.open(path) as image:
+        assert image.format == "PNG"
+        assert image.getpixel((100, 100)) == (200, 162, 200)
+        assert image.getpixel((540, 100)) == (214, 236, 240)
+
+    context = _make_context(runtime="none")
+    sent = await SendMessageToUserTool().call(
+        context, messages=[{"type": "image", "path": str(path)}]
+    )
+    assert sent.startswith("Message sent")
+    chain = context.context.context.send_message.await_args.args[1]
+    assert len(chain.chain) == 1
+    assert chain.chain[0].type == "Image"
+    assert await chain.chain[0].convert_to_file_path() == str(path)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "colors",
+    [
+        [],
+        [{"name": "x", "hex": "red"}],
+        [{"name": "x", "hex": "#12345678"}],
+        [{"name": "", "hex": "#123456"}],
+        [{"name": "x", "hex": "#123456"}] * 9,
+    ],
+)
+async def test_render_palette_rejects_invalid_or_unbounded_input(
+    monkeypatch, tmp_path, colors
+):
+    """Invalid requests must not create files or attempt arbitrary rendering."""
+    from astrbot.core.tools import message_tools
+
+    monkeypatch.setattr(message_tools, "get_astrbot_temp_path", lambda: str(tmp_path))
+    result = await RenderColorPaletteTool().call(None, colors=colors)
+    assert result.startswith("Error:")
+    assert not list(tmp_path.iterdir())
 
 
 def _make_context(
@@ -356,7 +415,9 @@ async def test_restricted_role_cannot_send_arbitrary_local_absolute_file(
     tool = SendMessageToUserTool()
     ctx = _make_context(
         role=role,
-        local_permissions={role: {"filesystem_scope": scope, "allow_execution": False}} if scope else None,
+        local_permissions={role: {"filesystem_scope": scope, "allow_execution": False}}
+        if scope
+        else None,
     )
     secret_path = tmp_path / "secret.txt"
     secret_path.write_text("secret", encoding="utf-8")
