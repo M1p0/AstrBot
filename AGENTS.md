@@ -1,3 +1,9 @@
+## Personal fork workflow
+
+This checkout belongs to `M1p0/AstrBot`. Work directly on `main` unless the user explicitly requests another branch, and push changes only to this personal fork through `origin`.
+
+The official `AstrBotDevs/AstrBot` repository is configured as `upstream` for fetching updates only. Do not push changes or open pull requests against the official repository unless the user explicitly requests it.
+
 ## Setup commands
 
 ### Core
